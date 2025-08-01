@@ -1,8 +1,11 @@
+
+import sys
 import folium
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, 
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                              QPushButton, QLabel, QComboBox, QSpinBox)
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QUrl
+from PyQt5.QtPositioning import QGeoPositionInfoSource 
 import os
 import tempfile
 
@@ -10,20 +13,16 @@ class GPSMapTab(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GPS Map")
-        self.init_ui()
 
+        # Initialize properties
         self.map_file = os.path.join(tempfile.gettempdir(), "gps_map.html")
+        self.current_lat = None
+        self.current_lon = None
+        self.location_source = None
 
-        # Fixed coordinates
-        self.current_lat = 12.9351
-        self.current_lon = 77.5360
-
-        # Set fields to fixed coordinates
-        self.lat_input.setText(str(self.current_lat))
-        self.lon_input.setText(str(self.current_lon))
-
-        self.status_label.setText(f"Showing fixed location: {self.current_lat}, {self.current_lon}")
-        self.generate_map(self.current_lat, self.current_lon)
+        # Setup the UI and location services
+        self.init_ui()
+        self.setup_location_services()
 
     def init_ui(self):
         main_layout = QVBoxLayout()
@@ -67,16 +66,14 @@ class GPSMapTab(QWidget):
         self.search_button.setMaximumWidth(150)
 
         self.current_location_button = QPushButton("\ud83d\udccd My Location")
-        self.current_location_button.setDisabled(True)  # Disabled since we're using fixed location
+        # The button is now enabled and connected
+        self.current_location_button.clicked.connect(self.get_current_location)
         self.current_location_button.setMaximumWidth(120)
 
         map_label = QLabel("Map Style:")
         self.map_type = QComboBox()
         self.map_type.addItems([
-            "OpenStreetMap",
-            "Stamen Terrain", 
-            "Stamen Toner",
-            "CartoDB positron"
+            "OpenStreetMap", "Stamen Terrain", "Stamen Toner", "CartoDB positron"
         ])
         self.map_type.currentTextChanged.connect(self.update_map_style)
         self.map_type.setMaximumWidth(140)
@@ -110,31 +107,79 @@ class GPSMapTab(QWidget):
 
         self.setLayout(main_layout)
 
+    def setup_location_services(self):
+        """Initializes the location source and connects signals."""
+        self.location_source = QGeoPositionInfoSource.createDefaultSource(self)
+        if self.location_source:
+            # Connect signals to handlers
+            self.location_source.positionUpdated.connect(self.position_updated)
+            self.location_source.error.connect(self.position_error)
+            # Start by getting the current location
+            self.get_current_location()
+        else:
+            # If no location service is available
+            self.status_label.setText("Location services not available.")
+            self.current_location_button.setDisabled(True)
+            # Show a default map (e.g., world view)
+            self.generate_map(0, 0, 2)
+
+
+    def get_current_location(self):
+        """Requests a single update from the location source."""
+        if self.location_source:
+            self.status_label.setText("Acquiring GPS location...")
+            self.location_source.requestUpdate(60000) # 60-second timeout
+
+    def position_updated(self, position):
+        """Handles the positionUpdated signal from the location source."""
+        coord = position.coordinate()
+        lat = coord.latitude()
+        lon = coord.longitude()
+
+        self.current_lat = lat
+        self.current_lon = lon
+
+        # Update the input fields and status
+        self.lat_input.setText(f"{lat:.6f}")
+        self.lon_input.setText(f"{lon:.6f}")
+        self.status_label.setText(f"Current location: {lat:.6f}, {lon:.6f}")
+
+        # Generate the map with the new location
+        self.generate_map(lat, lon)
+
+    def position_error(self, error):
+        """Handles errors from the location source."""
+        error_messages = {
+            QGeoPositionInfoSource.AccessError: "Access denied",
+            QGeoPositionInfoSource.ClosedError: "Service closed",
+            QGeoPositionInfoSource.UnknownSourceError: "Unknown error",
+        }
+        message = error_messages.get(error, "An unknown error occurred")
+        self.status_label.setText(f"Error getting location: {message}")
+
     def get_map_tiles(self):
         tile_map = {
             "OpenStreetMap": "OpenStreetMap",
             "Stamen Terrain": "Stamen Terrain",
-            "Stamen Toner": "Stamen Toner", 
+            "Stamen Toner": "Stamen Toner",
             "CartoDB positron": "CartoDB positron"
         }
         return tile_map.get(self.map_type.currentText(), "OpenStreetMap")
 
-    def generate_map(self, lat, lon):
+    def generate_map(self, lat, lon, zoom=None):
         try:
+            # Use provided zoom or the spinbox value
+            map_zoom = zoom if zoom is not None else self.zoom_spinbox.value()
+
             m = folium.Map(
-                location=[lat, lon], 
-                zoom_start=self.zoom_spinbox.value(),
+                location=[lat, lon],
+                zoom_start=map_zoom,
                 tiles=self.get_map_tiles()
             )
 
-            popup_text = f"""
-            <b>Location</b><br>
-            Latitude: {lat:.6f}<br>
-            Longitude: {lon:.6f}
-            """
-
+            popup_text = f"<b>Location</b><br>Latitude: {lat:.6f}<br>Longitude: {lon:.6f}"
             folium.Marker(
-                [lat, lon], 
+                [lat, lon],
                 tooltip="Click for details",
                 popup=folium.Popup(popup_text, max_width=200)
             ).add_to(m)
@@ -185,27 +230,17 @@ class GPSMapTab(QWidget):
             self.status_label.setText(f"Error: {e}")
 
     def update_map_style(self):
-        try:
-            lat = float(self.lat_input.text()) if self.lat_input.text() else self.current_lat
-            lon = float(self.lon_input.text()) if self.lon_input.text() else self.current_lon
-        except ValueError:
-            lat, lon = self.current_lat, self.current_lon
-
-        self.generate_map(lat, lon)
+        if self.current_lat is not None and self.current_lon is not None:
+            self.generate_map(self.current_lat, self.current_lon)
 
     def update_zoom(self):
-        try:
-            lat = float(self.lat_input.text()) if self.lat_input.text() else self.current_lat
-            lon = float(self.lon_input.text()) if self.lon_input.text() else self.current_lon
-        except ValueError:
-            lat, lon = self.current_lat, self.current_lon
-
-        self.generate_map(lat, lon)
+        if self.current_lat is not None and self.current_lon is not None:
+            self.generate_map(self.current_lat, self.current_lon)
 
     def closeEvent(self, event):
         if os.path.exists(self.map_file):
             try:
                 os.remove(self.map_file)
-            except:
+            except OSError:
                 pass
         event.accept()
