@@ -1,6 +1,6 @@
 import serial
 
-port = "COM12"   # Your STM32's port
+port = "COM12"   # Your STM32's port 
 baudrate = 9600  # Match this with your STM32 code
 
 try:
